@@ -1,0 +1,78 @@
+import os, time, base64, io, requests, pandas as pd, gradio as gr
+
+# === 여기를 네 리포에 맞게 수정 ===
+OWNER  = "kimjongwook-ui"
+REPO   = "slotchatbot"
+BRANCH = "main"   # master면 "master"로
+CSV_PATH_IN_REPO = "game_info.csv"  # 워크플로가 커밋하는 파일명
+
+RAW_URL = f"https://raw.githubusercontent.com/kimjongwook-ui/slotchatbot/main/game_info.csv"
+API_URL = f"https://api.github.com/repos/kimjongwook-ui/slotchatbot/contents/game_info.csv?ref=main"
+
+_df = None
+_last_loaded = 0
+TTL_SEC = 600  # 10분마다 원격 체크
+
+def fetch_csv_text():
+    # 1) Private 리포 + 토큰 있는 경우: GitHub API로(base64) 받기
+    if GITHUB_TOKEN:
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+        r = requests.get(API_URL, headers=headers, timeout=20)
+        r.raise_for_status()
+        j = r.json()
+        # j["content"]는 base64 인코딩된 텍스트
+        return base64.b64decode(j["content"]).decode("utf-8")
+    # 2) Public 리포: RAW URL로 바로 받기
+    r = requests.get(RAW_URL, timeout=20)
+    r.raise_for_status()
+    return r.text
+
+def load_df(force=False):
+    global _df, _last_loaded
+    now = time.time()
+    if (not force) and _df is not None and (now - _last_loaded) < TTL_SEC:
+        return _df
+    csv_text = fetch_csv_text()
+    _df = pd.read_csv(io.StringIO(csv_text))
+    _last_loaded = now
+    return _df
+
+# ===== 슬롯챗봇버전1 연동 지점 =====
+# 여기에 너의 "슬롯챗봇버전1" 검색/필터 함수를 붙여주세요.
+# 아래는 임시 예시(부분 일치 검색). 실제로는 네 함수로 대체!
+def kanana_search(message: str, df: pd.DataFrame) -> str:
+    q = (message or "").strip()
+    if not q:
+        return "검색어를 입력하세요."
+    m = df[df.apply(lambda r: r.astype(str).str.contains(q, case=False, na=False).any(), axis=1)]
+    if m.empty:
+        return "검색 결과가 없습니다."
+    return m.head(10).to_markdown(index=False)
+# =================================
+
+def chat_fn(message, history):
+    try:
+        df = load_df()
+        out = kanana_search(message, df)
+        return out
+    except Exception as e:
+        return f"에러: {e}"
+
+with gr.Blocks(title="Kanana 슬롯 검색 (슬롯챗봇버전1)") as demo:
+    gr.Markdown("### Kanana 슬롯 검색 — 슬롯챗봇버전1")
+    chat = gr.Chatbot(height=420)
+    box = gr.Textbox(placeholder="예: RTP 95% 이상 & 편차 11 이상", label="질문/조건")
+    reload_btn = gr.Button("데이터 새로고침")
+
+    def respond(t, h):
+        return "", h + [(t, chat_fn(t, h))]
+
+    def reload_df():
+        load_df(force=True)
+        return "최신 CSV로 새로 불러왔습니다."
+
+    box.submit(respond, [box, chat], [box, chat])
+    reload_btn.click(lambda: (reload_df(),), None, None)
+
+if __name__ == "__main__":
+    demo.launch()
