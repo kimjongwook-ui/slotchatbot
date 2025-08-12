@@ -1,17 +1,15 @@
 name: sheet-to-csv
 
-# 액션이 푸시할 수 있도록 권한 부여
 permissions:
   contents: write
 
-# (선택) 동시에 2개 이상 돌면 충돌나니, 한 번에 하나만
 concurrency:
   group: csv-update
   cancel-in-progress: false
 
 on:
   schedule:
-    - cron: '0 15 * * *'   # 매일 00:00 KST
+    - cron: '0 15 * * *'   # 매일 00:00 KST (UTC 15:00)
   workflow_dispatch:
 
 jobs:
@@ -21,26 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0              # rebase 가능하도록 전체 히스토리
-          persist-credentials: true   # GITHUB_TOKEN 유지
-          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main  # 코드 베이스는 main에서
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - run: pip install google-auth requests pandas
-
-      # 로컬을 먼저 최신으로 맞춤(사전 rebase)
-      - name: Sync with remote (pre)
-        run: |
-          git config user.name "sheet-bot"
-          git config user.email "sheet-bot@users.noreply.github.com"
-          git config pull.rebase true
-          git config rebase.autoStash true
-          git fetch origin main
-          git checkout main
-          git pull --rebase origin main
 
       - name: Write credentials.json (from secret)
         run: |
@@ -66,7 +53,6 @@ jobs:
           import os, io, pandas as pd
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
-
           sid=os.environ["SHEET_ID"]; gid=os.environ.get("SHEET_GID","0")
           creds=service_account.Credentials.from_service_account_file(
               "credentials.json",
@@ -79,26 +65,25 @@ jobs:
           print("Saved game_info.csv", len(r.content))
           PY
 
-      - name: Commit CSV
-        run: |
-          git add game_info.csv
-          git commit -m "auto: update game_info.csv" || echo "no changes"
-
-      # 푸시 직전에 다시 한 번 최신화 후 푸시, 안되면 재시도
-      - name: Rebase & Push with retry
+      - name: Commit & Push to data branch (create if missing)
         run: |
           set -e
-          for i in 1 2 3; do
-            echo "Attempt $i: rebase & push"
-            # 최신 반영
-            git pull --rebase origin main || true
-            # 푸시 시도
-            if git push origin HEAD:main; then
-              echo "Push succeeded"
-              exit 0
-            fi
-            echo "Push failed, retrying in $((i*3))s..."
-            sleep $((i*3))
-          done
-          echo "Push failed after retries"
-          exit 1
+          git config user.name "sheet-bot"
+          git config user.email "sheet-bot@users.noreply.github.com"
+
+          # data 브랜치가 있으면 최신으로 가져오고 checkout,
+          # 없으면 새로 만든다.
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data
+            git checkout -B data origin/data
+          else
+            git checkout -B data
+          fi
+
+          # CSV만 스테이지(다른 파일 오염 방지)
+          git add -f game_info.csv
+          git commit -m "auto: update game_info.csv" || echo "no changes"
+
+          # 동시 실행으로 사이에 커밋이 생겨도 rebase로 따라감
+          git pull --rebase origin data || true
+          git push origin HEAD:data
