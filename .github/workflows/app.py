@@ -9,7 +9,7 @@ import gradio as gr
 # =====[ 깃허브 RAW CSV 경로 설정 ]=====
 OWNER  = "kimjongwook-ui"   # <- 네 깃허브 아이디
 REPO   = "slotchatbot"      # <- 리포 이름
-BRANCH = "main"             # <- 기본 브랜치 (다르면 변경)
+BRANCH = "data"             # <- 기본 브랜치 (다르면 변경)
 CSV_PATH_IN_REPO = "game_info.csv"
 CSV_URL = f"https://raw.githubusercontent.com/kimjongwook-ui/slotchatbot/main/game_info.csv"
 
@@ -347,4 +347,5 @@ with gr.Blocks(title="Kanana 슬롯 검색 — 슬롯챗봇버전1") as demo:
     reload_btn.click(lambda: (reload_df(),), None, None)
 
 if __name__ == "__main__":
+
     demo.launch()
