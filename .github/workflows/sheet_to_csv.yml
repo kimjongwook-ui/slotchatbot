@@ -1,0 +1,95 @@
+name: sheet-to-csv
+
+on:
+  schedule:
+    - cron: "0 15 * * *"  # 매일 00:00 KST
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout data branch
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          clean: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install google-auth requests pandas
+
+      # 기존 내부 시트 -> game_info.csv
+      - name: Export Google Sheet to CSV (internal)
+        if: ${{ secrets.SHEET_ID != '' }}
+        env:
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SHEET_GID: ${{ secrets.SHEET_GID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          python - <<'PY'
+          import os, io, json, pandas as pd
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          sid=os.environ["SHEET_ID"]; gid=os.environ.get("SHEET_GID","0")
+          creds=service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"]),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+          authed=AuthorizedSession(creds)
+          url=f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+          r=authed.get(url); r.raise_for_status()
+          open("game_info.csv","wb").write(r.content)
+          print("Saved game_info.csv:", len(r.content), "bytes")
+          PY
+
+      # 🔹 외부 시트 -> external_game_info.csv (추가)
+      - name: Export Google Sheet to CSV (external)
+        if: ${{ secrets.EXTERNAL_SHEET_ID != '' }}
+        env:
+          SHEET_ID: ${{ secrets.EXTERNAL_SHEET_ID }}
+          SHEET_GID: ${{ secrets.EXTERNAL_SHEET_GID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          python - <<'PY'
+          import os, io, json, pandas as pd
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          sid=os.environ["SHEET_ID"]; gid=os.environ.get("SHEET_GID","0")
+          creds=service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"]),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+          authed=AuthorizedSession(creds)
+          url=f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+          r=authed.get(url); r.raise_for_status()
+          open("external_game_info.csv","wb").write(r.content)
+          print("Saved external_game_info.csv:", len(r.content), "bytes")
+          PY
+
+      - name: Commit & Push (only if changed)
+        run: |
+          set -e
+          git config user.name  "sheet-bot"
+          git config user.email "sheet-bot@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+
+          git commit -m "auto: update game_info.csv & external_game_info.csv"
+          git pull --rebase origin data || true
+          git push origin data
