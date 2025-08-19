@@ -1,0 +1,89 @@
+name: sheet-to-csv
+
+permissions:
+  contents: write
+
+concurrency:
+  group: csv-update
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: '0 15 * * *'   # 매일 00:00 KST (UTC 15:00)
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main  # 코드 베이스는 main에서
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install google-auth requests pandas
+
+      - name: Write credentials.json (from secret)
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+          python - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path('credentials.json')
+          data = p.read_text()
+          print("credentials.json size:", len(data))
+          try:
+              j = json.loads(data)
+          except Exception as e:
+              print("JSON load error:", e); sys.exit(1)
+          print("OK: type =", j.get("type"))
+          PY
+
+      - name: Export Google Sheet to CSV
+        env:
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SHEET_GID: ${{ secrets.SHEET_GID }}
+        run: |
+          python - <<'PY'
+          import os, io, pandas as pd
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+          sid=os.environ["SHEET_ID"]; gid=os.environ.get("SHEET_GID","0")
+          creds=service_account.Credentials.from_service_account_file(
+              "credentials.json",
+              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+          authed=AuthorizedSession(creds)
+          url=f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+          r=authed.get(url); r.raise_for_status()
+          open("game_info.csv","wb").write(r.content)
+          print("Saved game_info.csv", len(r.content))
+          PY
+
+      - name: Commit & Push to data branch (create if missing)
+        run: |
+          set -e
+          git config user.name "sheet-bot"
+          git config user.email "sheet-bot@users.noreply.github.com"
+
+          # data 브랜치가 있으면 최신으로 가져오고 checkout,
+          # 없으면 새로 만든다.
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data
+            git checkout -B data origin/data
+          else
+            git checkout -B data
+          fi
+
+          # CSV만 스테이지(다른 파일 오염 방지)
+          git add -f game_info.csv
+          git commit -m "auto: update game_info.csv" || echo "no changes"
+
+          # 동시 실행으로 사이에 커밋이 생겨도 rebase로 따라감
+          git pull --rebase origin data || true
+          git push origin HEAD:data
