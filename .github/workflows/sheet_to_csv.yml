@@ -11,7 +11,6 @@ permissions:
 jobs:
   export:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout data branch
         uses: actions/checkout@v4
@@ -28,16 +27,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: |
-          pip install google-auth requests pandas
+        run: pip install google-auth requests pandas
 
+      # 내부 시트 -> game_info.csv
       - name: Export Google Sheet to CSV (internal)
-        if: ${{ secrets.SHEET_ID && secrets.GOOGLE_CREDENTIALS_JSON }}
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
           SHEET_GID: ${{ secrets.SHEET_GID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
+          set -e
+          if [ -z "${SHEET_ID}" ] || [ -z "${GOOGLE_CREDENTIALS_JSON}" ]; then
+            echo "skip internal: missing secrets"; exit 0
+          fi
           python - <<'PY'
           import os, io, json, pandas as pd
           from google.oauth2 import service_account
@@ -50,18 +52,21 @@ jobs:
           authed=AuthorizedSession(creds)
           url=f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
           r=authed.get(url); r.raise_for_status()
-          with open("game_info.csv","wb") as f:
-              f.write(r.content)
+          open("game_info.csv","wb").write(r.content)
           print("Saved game_info.csv:", len(r.content), "bytes")
           PY
 
+      # 외부 시트 -> external_game_info.csv
       - name: Export Google Sheet to CSV (external)
-        if: ${{ secrets.EXTERNAL_SHEET_ID && secrets.GOOGLE_CREDENTIALS_JSON }}
         env:
           SHEET_ID: ${{ secrets.EXTERNAL_SHEET_ID }}
           SHEET_GID: ${{ secrets.EXTERNAL_SHEET_GID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
+          set -e
+          if [ -z "${SHEET_ID}" ] || [ -z "${GOOGLE_CREDENTIALS_JSON}" ]; then
+            echo "skip external: missing secrets"; exit 0
+          fi
           python - <<'PY'
           import os, io, json, pandas as pd
           from google.oauth2 import service_account
@@ -74,8 +79,7 @@ jobs:
           authed=AuthorizedSession(creds)
           url=f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
           r=authed.get(url); r.raise_for_status()
-          with open("external_game_info.csv","wb") as f:
-              f.write(r.content)
+          open("external_game_info.csv","wb").write(r.content)
           print("Saved external_game_info.csv:", len(r.content), "bytes")
           PY
 
@@ -84,13 +88,11 @@ jobs:
           set -e
           git config user.name  "sheet-bot"
           git config user.email "sheet-bot@users.noreply.github.com"
-
           git add -A
           if git diff --cached --quiet; then
             echo "no changes"
             exit 0
           fi
-
           git commit -m "auto: update game_info.csv & external_game_info.csv"
           git pull --rebase origin data || true
           git push origin data
